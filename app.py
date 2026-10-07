@@ -4,8 +4,17 @@ import re
 from fastapi import UploadFile, File
 from PIL import Image
 import easyocr
-import os
 from pypdf import PdfReader
+
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+
+load_dotenv()
+
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
 
 app = FastAPI(
@@ -236,46 +245,6 @@ def load_document(path):
 
 knowledge_base = []
 
-@app.get("/search")
-def search(question: str):
-
-    results = []
-
-    query_words = (
-        question.lower().split()
-    )
-
-    for doc in knowledge_base:
-
-        content = (
-            doc["content"].lower()
-        )
-
-        score = 0
-
-        for word in query_words:
-
-            if word in content:
-                score += 1
-
-        if score > 0:
-
-            results.append(
-                {
-                    "file": doc["file"],
-                    "score": score,
-                    "match":
-                        doc["content"][:750]
-                }
-            )
-
-    results.sort(
-        key=lambda x: x["score"],
-        reverse=True
-    )
-
-    return results[:5]
-
 
 def load_pdf_document(path):
 
@@ -330,3 +299,96 @@ def load_knowledge():
                 )
                 
 load_knowledge()
+
+load_knowledge()
+
+
+def search_documents(question):
+
+    results = []
+
+    query_words = (
+        question.lower().split()
+    )
+
+    for doc in knowledge_base:
+
+        content = (
+            doc["content"].lower()
+        )
+
+        score = 0
+
+        for word in query_words:
+
+            if word in content:
+                score += 1
+
+        if score > 0:
+
+            results.append(
+                {
+                    "file": doc["file"],
+                    "score": score,
+                    "content": doc["content"]
+                }
+            )
+
+    results.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    return results[:3]
+
+
+@app.get("/search")
+def search(question: str):
+
+    return search_documents(question)
+
+
+@app.get("/ask")
+def ask(question: str):
+
+    results = search_documents(
+        question
+    )
+
+    if not results:
+
+        return {
+            "answer":
+            "I could not find anything relevant in the SOPs."
+        }
+
+    context = "\n\n".join(
+        [
+            doc["content"]
+            for doc in results
+        ]
+    )
+
+    prompt = f"""
+Answer the user's question
+using ONLY the SOP documentation.
+
+If the answer cannot be found,
+say you do not know.
+
+Question:
+{question}
+
+Documentation:
+{context}
+"""
+
+    response = client.responses.create(
+        model="gpt-4.1-mini",
+        input=prompt
+    )
+
+    return {
+        "answer":
+        response.output_text
+    }
