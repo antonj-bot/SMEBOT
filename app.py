@@ -4,6 +4,9 @@ import re
 from fastapi import UploadFile, File
 from PIL import Image
 import easyocr
+import os
+from pypdf import PdfReader
+
 
 app = FastAPI(
     title="SMEBOT"
@@ -29,11 +32,13 @@ def is_valid_vin(vin: str):
     return bool(
         re.match(pattern, vin.upper())
     )
-    
+
 
 @app.get("/vin/{vin}")
 def decode_vin(vin: str):
-
+    
+    vin = vin.upper()
+    
     if not is_valid_vin(vin):
         return {
             "error": "Invalid VIN"
@@ -95,10 +100,38 @@ async def ocr_image(file: UploadFile = File(...)):
         detail=0
     )
 
-    return {
-        "text": result
-    }
+    possible_vins = find_possible_vins(result)
 
+    suggestions = []
+
+    for vin in possible_vins:
+
+        candidates = generate_candidates(vin)
+
+        match = try_candidates(candidates)
+
+        if match:
+            suggestions.append(match)
+
+    detected_vin = None
+
+    if possible_vins:
+        detected_vin = possible_vins[0]
+
+    suggestion = None
+
+    if suggestions:
+        suggestion = suggestions[0]
+
+    return {
+        "ocr_text": result,
+        "detected_vin": detected_vin,
+        "decoded": False,
+        "did_you_mean": suggestion
+    }
+    
+    
+    
 OCR_CORRECTIONS = {
     "O": "0",
     "I": "1",
@@ -119,6 +152,9 @@ def generate_candidates(vin: str):
             candidates.append(
                 vin.replace(bad, good)
             )
+            
+    return candidates
+
 
 def try_candidates(candidates):
 
@@ -150,3 +186,147 @@ def try_candidates(candidates):
 
     return None
 
+def find_possible_vins(texts):
+
+    possible = []
+
+    for text in texts:
+
+        cleaned = (
+            text.upper()
+            .replace(" ", "")
+            .strip()
+        )
+
+        if len(cleaned) >= 15:
+            possible.append(cleaned)
+
+    return possible
+
+
+
+@app.get("/files")
+def list_files():
+
+    files = []
+
+    for root, dirs, filenames in os.walk("knowledge"):
+
+        for file in filenames:
+
+            files.append(
+                os.path.join(root, file)
+            )
+
+    return {
+        "count": len(files),
+        "files": files[:100]
+    }
+
+def load_document(path):
+
+    with open(
+        path,
+        "r",
+        encoding="utf-8",
+        errors="ignore"
+    ) as f:
+
+        return f.read()
+
+knowledge_base = []
+
+@app.get("/search")
+def search(question: str):
+
+    results = []
+
+    query_words = (
+        question.lower().split()
+    )
+
+    for doc in knowledge_base:
+
+        content = (
+            doc["content"].lower()
+        )
+
+        score = 0
+
+        for word in query_words:
+
+            if word in content:
+                score += 1
+
+        if score > 0:
+
+            results.append(
+                {
+                    "file": doc["file"],
+                    "score": score,
+                    "match":
+                        doc["content"][:750]
+                }
+            )
+
+    results.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    return results[:5]
+
+
+def load_pdf_document(path):
+
+    reader = PdfReader(path)
+
+    text = ""
+
+    for page in reader.pages:
+
+        page_text = page.extract_text()
+
+        if page_text:
+            text += page_text + "\n"
+
+    return text
+
+def load_knowledge():
+
+    knowledge_base.clear()
+
+    for root, dirs, files in os.walk(
+        "knowledge"
+    ):
+
+        for file in files:
+
+            if not file.endswith(".pdf"):
+                continue
+
+            path = os.path.join(
+                root,
+                file
+            )
+
+            try:
+
+                content = load_pdf_document(
+                    path
+                )
+
+                knowledge_base.append(
+                    {
+                        "file": file,
+                        "content": content
+                    }
+                )
+
+            except Exception as e:
+
+                print(
+                    f"Failed to load: {file}"
+                )
+                
+load_knowledge()
